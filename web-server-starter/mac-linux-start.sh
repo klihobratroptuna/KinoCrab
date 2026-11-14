@@ -5,8 +5,8 @@ set -eu
 # CONFIGURATION
 # ==========================================
 
-OWNER="tojefin"
-REPO="kinofree"
+OWNER="klihobratroptuna"
+REPO="KinoCrab"
 BRANCH="gh-pages"
 PORT="8080"
 

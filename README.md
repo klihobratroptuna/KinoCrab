@@ -17,6 +17,26 @@ npm run dev -- --open
 npm run build
 ```
 
+## Запуск у себя через Docker
+
+Нужен Docker и Node.js. Node нужен только для `npm install` и сборки web-образа; без него сборка идёт обычными командами docker.
+
+1. Распакуйте архив релиза (zip или tar.gz) в любую папку.
+2. Скопируйте `.env.example` в `.env` и заполните ключи и логин PocketBase. Без `.env` запуск не начнётся.
+3. Запустите контейнеры:
+
+   - Windows: `docker-up.bat`
+   - Linux и macOS: `docker compose up -d`
+
+Флаги `docker-up.bat`:
+
+- `--skip-sync` — поднять только web и PocketBase, без фоновых скраперов (в `docker-compose.yml` 7 сервисов, из них 5 фоновые);
+- `--recreate` — пересоздать контейнеры;
+- `--skip-build` — не пересобирать web-образ;
+- `--superuser` — создать superuser PocketBase из `PB_EMAIL` и `PB_PASSWORD` в `.env`.
+
+После запуска: приложение на `http://localhost:3000`, PocketBase на `http://localhost:8090`. Миграции из `pb_migrations` применяются при первом старте контейнера с базой.
+
 ## Структура проекта
 
 lib

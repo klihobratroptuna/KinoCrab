@@ -7,8 +7,8 @@ rem ==========================================
 rem CONFIGURATION
 rem ==========================================
 
-set "OWNER=tojefin"
-set "REPO=kinofree"
+set "OWNER=klihobratroptuna"
+set "REPO=KinoCrab"
 set "BRANCH=gh-pages"
 
 set "PYTHON_VERSION=3.13.17"

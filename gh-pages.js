@@ -4,7 +4,7 @@ publish(
 	'build',
 	{
 		branch: 'gh-pages',
-		repo: `https://github.com/Tojefin/kinofree.git`,
+		repo: `https://github.com/klihobratroptuna/KinoCrab.git`,
 		src: ['**/*', '.htaccess', '.nojekyll']
 	},
 	() => {
