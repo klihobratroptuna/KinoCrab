@@ -1,0 +1,66 @@
+@import 'static/styles/reset';
+@import 'static/styles/font-face';
+
+svg {
+	transition: all ease 0.25s;
+}
+
+* {
+	font-family: Inter, system-ui;
+	font-style: normal;
+}
+
+html,
+body {
+	scrollbar-gutter: stable;
+}
+
+body {
+	background: var(--bg);
+
+	&:has(dialog[open]) {
+		overflow: hidden;
+	}
+
+	&::-webkit-scrollbar {
+		width: 4px;
+		border-radius: 30px;
+	}
+
+	&::-webkit-scrollbar-thumb {
+		cursor: pointer;
+		border-radius: 100px;
+		background: var(--hairline-hi);
+
+		&:hover {
+			background: rgba(255, 255, 255, 0.24);
+		}
+	}
+
+	&::-webkit-scrollbar-track {
+		background-color: transparent;
+		border-radius: 100px;
+	}
+}
+
+:root {
+	/* Имена переменных оставлены как были: изменились только значения. Акцент стал
+	   белым, цветная шкала рейтинга ушла — все поверхности говорят одним языком. */
+	--white: #ffffff;
+	--gray: #8b8f98;
+	--gray-soft: #6a6e77;
+	--yellow: #ffffff;
+	--green: #ffffff;
+	--red: #ffffff;
+	--black: #000000;
+	/* Поверхности: фон страницы, карточка, тонкая линия вместо рамок и плашек. */
+	--bg: #0b0b0d;
+	--card: #16161a;
+	--card-hi: #1b1b21;
+	--hairline: rgba(255, 255, 255, 0.08);
+	--hairline-hi: rgba(255, 255, 255, 0.14);
+	--glass: rgba(11, 11, 13, 0.72);
+	--shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+	--radius: 12px;
+	color-scheme: light dark;
+}

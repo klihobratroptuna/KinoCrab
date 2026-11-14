@@ -1,0 +1,26 @@
+{
+	"name": "KINOFREE",
+	"short_name": "KINOFREE",
+	"icons": [
+		{
+			"src": "icons/favicon.ico",
+			"sizes": "200x200",
+			"type": "image/ico"
+		},
+		{
+			"src": "favicon-crab-512.png",
+			"sizes": "512x512",
+			"type": "image/png"
+		},
+		{
+			"src": "favicon-crab.png",
+			"sizes": "128x128",
+			"type": "image/png"
+		}
+	],
+	"start_url": "index.html",
+	"theme_color": "#13161B",
+	"background_color": "#13161B",
+	"display": "fullscreen",
+	"orientation": "any"
+}

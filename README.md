@@ -1,4 +1,4 @@
-# KINOCrab
+# KINOFREE
 
 [![Telegram](https://img.shields.io/badge/Telegram-24A1DE?style=for-the-badge)](https://t.me/+WRTVf77IofcxNDQ6)
 

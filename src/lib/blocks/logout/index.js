@@ -1,0 +1,1 @@
+export {default as UiLogout } from './ui.logout.svelte'

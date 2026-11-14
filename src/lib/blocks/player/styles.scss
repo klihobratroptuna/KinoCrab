@@ -1,0 +1,316 @@
+section {
+	display: flex;
+	max-width: 1920px;
+	padding: 20px 40px;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	flex: 1 0 0;
+	align-self: stretch;
+
+	@media (max-width: 1024px) {
+		flex: none;
+	}
+
+	@media (max-width: 768px) {
+		flex: none;
+		padding: 16px;
+	}
+}
+
+// Панель страницы плеера: слева колонка с тайтлом, оценкой, чипами и описанием,
+// справа сам плеер. На узких экранах ряд складывается — плеер идёт первым,
+// информация под ним, порядок задаёт сетка, а не разметка.
+.box {
+	display: grid;
+	grid-template-columns: minmax(280px, 340px) 1fr;
+	grid-template-areas: 'aside player';
+	gap: 24px;
+	align-items: start;
+	align-self: stretch;
+	padding: 24px;
+	border-radius: 14px;
+	border: 1px solid var(--hairline);
+	background: var(--card);
+	box-shadow: none;
+
+	@media (max-width: 1080px) {
+		grid-template-columns: 1fr;
+		grid-template-areas: 'player' 'aside';
+		gap: 16px;
+		padding: 16px;
+	}
+}
+
+.player {
+	grid-area: player;
+	width: 100%;
+	min-height: 250px;
+	border-radius: 12px;
+	overflow: hidden;
+	background-color: transparent;
+
+	iframe {
+		// высоту берём из пропорции 16/9, а не из растянутого родителя
+		aspect-ratio: 16 / 9;
+		width: 100%;
+		height: auto;
+		// если источник отдаёт пустую страницу (Collaps сейчас отвечает 422),
+		// вместо белого квадрата будет фон в цвет карточки
+		background: #101013;
+		border-radius: 12px;
+	}
+
+	// Полоска просмотра. Заполнение есть только там, где время реально известно —
+	// у нашего <video>. Для чужого iframe полоса нейтральная: линия без заполнения.
+	.progress {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-top: 12px;
+
+		.bar {
+			flex: 1 1 auto;
+			height: 3px;
+			border-radius: 100px;
+			background: rgba(255, 255, 255, 0.12);
+			overflow: hidden;
+
+			span {
+				display: block;
+				height: 100%;
+				border-radius: 100px;
+				background: var(--white);
+				transition: width ease 0.3s;
+			}
+		}
+
+		p {
+			display: flex;
+			gap: 6px;
+			font-size: 12px;
+			font-weight: 500;
+			line-height: 133%;
+			color: var(--gray-soft);
+			font-variant-numeric: tabular-nums;
+		}
+	}
+
+	.hint {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		align-items: center;
+		margin-top: 12px;
+		font-weight: 400;
+		font-size: 13px;
+		line-height: 140%;
+		color: var(--gray);
+
+		a {
+			color: var(--gray);
+			text-decoration: none;
+		}
+	}
+}
+
+// Правила только для новой строки Kinovibe: кадр там не строится (embed источника
+// отвечает 404), играет плейлист своим <video>. Существующие правила не трогает,
+// включается только когда список серий есть.
+.player video {
+	aspect-ratio: 16 / 9;
+	width: 100%;
+	height: auto;
+	border-radius: 12px;
+	background: #101013;
+}
+
+.episodes {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 12px;
+
+	.episode {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		border: 1px solid var(--hairline);
+		border-radius: 9px;
+		background: rgba(255, 255, 255, 0.04);
+		color: var(--gray);
+		font-family: inherit;
+		font-size: 13px;
+		font-weight: 500;
+		padding: 6px 12px;
+		cursor: pointer;
+		transition: all ease 0.25s;
+
+		@include hover {
+			border-color: var(--hairline-hi);
+			background: rgba(255, 255, 255, 0.1);
+			color: var(--white);
+		}
+	}
+
+	// Серия, которую сейчас играет видео
+	.episode.active {
+		border-color: var(--hairline-hi);
+		background: rgba(255, 255, 255, 0.1);
+		color: var(--white);
+	}
+}
+
+// Колонка слева: строки дышат — между пунктами больше воздуха, чем было,
+// иначе название, год, оценка и кнопки сливаются в одну кучу.
+aside {
+	grid-area: aside;
+	display: flex;
+	width: 100%;
+	gap: 18px;
+	flex-direction: column;
+}
+
+// Оценка — нейтральная шкала: цифра белым, площадка серым, без цветных плашек
+.rating {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+
+	// Отступы считаем по видимым границам, а не по строкам. Цифры не заполняют
+	// свою строку: у Inter в 26 px строка 31.2 px, черта цифр 20 px — сверху
+	// остаётся 5.1 px, снизу 7.1 px под спуск. Сверху блок года заканчивается
+	// плашкой, которая выступает ниже цифр на 4 px, а caps подписи снизу
+	// начинаются на 2.6 px ниже верха своей строки. С этими поправками пустого
+	// места вокруг цифры получается одинаково: около 26 px сверху и снизу.
+	margin-top: 2px;
+	margin-bottom: -2px;
+
+	mark {
+		font-weight: 600;
+		font-size: 26px;
+		line-height: 120%;
+		letter-spacing: -0.01em;
+		background: none;
+		color: var(--white);
+	}
+
+	span {
+		font-weight: 400;
+		font-size: 13px;
+		line-height: 133%;
+		color: var(--gray-soft);
+	}
+
+	:global(svg path) {
+		stroke: var(--gray-soft);
+		transition: all ease 0.25s;
+	}
+
+	@include hover {
+		:global(svg path) {
+			stroke: var(--white);
+		}
+	}
+}
+
+// Подпись типа тайтла (Фильм / Сериал): стоит второй строкой под названием, рядом
+// с годом. Плашка меньше строки: 11 px, без вертикальных прокладок, только по краям,
+// поэтому по высоте равна цифрам года
+.badge {
+	display: inline-flex;
+	align-self: center;
+	align-items: center;
+	gap: 6px;
+
+	// Строка строкой, а центр цифр года лежит чуть выше центра строки: у Inter
+	// при 13 px цифра занимает 9 px, строка 16.9 px, то есть центр цифр на
+	// 0.5 px выше середины строки. Чип центрируется по строке, поэтому рамка
+	// кажется ниже года. Сдвиг поднимает рамку чипа на линию центра цифр.
+	transform: translateY(-0.5px);
+
+	padding: 0 7px;
+	border: 1px solid var(--hairline);
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.04);
+	color: var(--gray);
+	font-size: 11px;
+	line-height: 130%;
+	font-weight: 500;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+}
+
+.actions {
+	display: flex;
+	flex-direction: column;
+	gap: 18px;
+}
+
+.list,
+.sources {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+
+	h4 {
+		font-weight: 600;
+		font-size: 11px;
+		line-height: 120%;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--gray-soft);
+	}
+
+	div {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	p {
+		font-weight: 400;
+		font-size: 13px;
+		line-height: 140%;
+		color: var(--gray-soft);
+	}
+}
+
+// Переключатель источников: segmented control — панель с тонкой линией,
+// активный вариант чуть светлее, без цветного акцента
+.sources > div {
+	display: inline-flex;
+	align-self: flex-start;
+	gap: 2px;
+	padding: 4px;
+	border: 1px solid var(--hairline);
+	border-radius: 12px;
+	background: rgba(255, 255, 255, 0.03);
+
+	:global(button) {
+		background: transparent;
+		border: none;
+		box-shadow: none;
+		border-radius: 9px;
+		padding: 8px 14px;
+		color: var(--gray);
+		font-size: 14px;
+		font-weight: 600;
+	}
+
+	:global(button.active) {
+		background: rgba(255, 255, 255, 0.1);
+		color: var(--white);
+	}
+
+	:global(button:disabled) {
+		opacity: 0.45;
+	}
+}
+
+aside > p {
+	font-weight: 400;
+	font-size: 15px;
+	line-height: 155%;
+	color: var(--gray);
+}

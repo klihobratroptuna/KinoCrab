@@ -1,0 +1,513 @@
+server {
+    listen 80;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Сжатие. Проверено на файлах этой сборки: JS-чанк 42 КБ -> 10.7 КБ, CSS 10.6 КБ -> 3.7 КБ,
+    # то есть в 3-4 раза меньше. Без gzip браузер качает их целиком.
+    # Шрифты и картинки уже сжаты (woff2, jpg), их в список не включаем.
+    # text/event-stream намеренно нет: Realtime API PocketBase — это SSE, и сжатие
+    # задержало бы выдачу событий подписке.
+    gzip on;
+    gzip_comp_level 6;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # Прокси на PocketBase
+    location /api/pb/ {
+        proxy_pass http://pocketbase:8090/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        # Клиент ходит сюда же, откуда берётся страница (src/lib/shared/pocketbase/index.js).
+        # Realtime API — это SSE: с буферизацией nginx копит ответ и события подписке
+        # приходят позже, а на простое соединения без событий долгий read-таймаут рвёт
+        # поток. Поэтому поток раздаём без буфера, но с запасом по времени.
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+
+    # Прокси Kodik API. Токен не должен светиться в браузере: SPA ходит сюда,
+    # а токен подставляет nginx из KODIK_TOKEN (файл .env -> docker compose).
+    # envsubst подставляет только переменные окружения, поэтому $1/$2/$request_uri
+    # остаются переменными nginx. Kodik берёт токен только из query, поэтому весь
+    # адрес апстрима собирается целиком (set $args на прокси не работает).
+    location /api/kodik/ {
+        # DNS резолвится на время запроса: если kodik-api.com недоступен,
+        # nginx не падает при старте, а просто отвечает ошибкой на этот путь.
+        resolver 127.0.0.11 valid=30s;
+
+        # Токен из .env. Если он пустой, nginx ничего не добавляет и пропускает
+        # token из query (его приносит браузер — публичный токен Kodik).
+        set $env_token "${KODIK_TOKEN}";
+        set $token_part "";
+        if ($env_token != "") {
+            set $token_part "token=$env_token&";
+        }
+
+        if ($request_uri ~ "^/api/kodik/([^?]+)\?(.+)$") {
+            set $kodik_target "https://kodik-api.com/$1?$token_part$2";
+        }
+        if ($request_uri ~ "^/api/kodik/([^?]+)$") {
+            set $kodik_target "https://kodik-api.com/$1?$token_part";
+        }
+
+        proxy_pass $kodik_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host kodik-api.com;
+        # Таймауты важны: Kodik сейчас закрывает TLS-соединение, и без них nginx ждал бы
+        # минуту. Через 10 секунд прокси отвечает 504, и страница показывает состояние
+        # источника вместо вечного «поиск».
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Публичный токен Kodik: он зашит в их собственный скрипт плееров
+    # (kodik-add.com/add-players.min.js). Браузер не может прочитать его напрямую
+    # (CORS), поэтому забираем через этот прокси и вытаскиваем regexp'ом.
+    location /api/kodik-token {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/kodik-token") {
+            set $token_page "https://kodik-add.com/add-players.min.js?v=2";
+        }
+
+        proxy_pass $token_page;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host kodik-add.com;
+        add_header Cache-Control "public, max-age=86400";
+    }
+
+    # Kinopoisk API. Browser читает его напрямую (CORS открыт), но на холодном старте
+    # маршрут браузера до этого хоста чаще всего не работает, а маршрут контейнера
+    # работает: те же запросы у фоновых сервисов проходят за 0,3-0,4 секунды. Поэтому
+    # страница спрашивает сначала через этот прокси — браузеру нужен только
+    # localhost:3000, — и только если прокси ошибся, пробует напрямую тем же ключом.
+    # Ключ берём из KINOPOISK_API_KEY (.env -> docker compose), чтобы он не светился
+    # в сборке. Кэш только для удачных ответов: add_header без always не действует на
+    # 4xx, поэтому неудачу браузер не запоминает и повтор может пройти.
+    location /api/kinopoisk/ {
+        resolver 127.0.0.11 valid=30s;
+
+        set $env_key "${KINOPOISK_API_KEY}";
+
+        if ($request_uri ~ "^/api/kinopoisk/?(.*)$") {
+            set $poisk_target "https://kinopoiskapiunofficial.tech/api/$1";
+        }
+
+        proxy_pass $poisk_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host kinopoiskapiunofficial.tech;
+        proxy_set_header X-API-KEY $env_key;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # CAR4: карточки поиска берут отсюда запасной постер с яндексового CDN и платформы,
+    # где тайтл смотрят официально (watchability). Ключ подставляется из POISK_KINO_API_KEY,
+    # поэтому в сборке браузера его нет: страница просит только localhost:3000.
+    # Кэш только для удачных ответов — add_header без always не действует на 4xx, поэтому
+    # неудачу браузер не запоминает и повтор может пройти.
+    location /api/poiskkino/ {
+        resolver 127.0.0.11 valid=30s;
+
+        set $env_pk_key "${POISK_KINO_API_KEY}";
+
+        if ($request_uri ~ "^/api/poiskkino/?(.*)$") {
+            set $pk_target "https://api.poiskkino.dev/$1";
+        }
+
+        proxy_pass $pk_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host api.poiskkino.dev;
+        proxy_set_header X-API-KEY $env_pk_key;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Постеры и поиск по имени на TMDB — последний запасной путь postera в карусели
+    # «Сериалы» (src/lib/shared/tmdbPoster/index.js). TMDB принимает ключ только в query
+    # (api_key=), в заголовке его не читает, поэтому ключ подставляет nginx: страница
+    # спрашивает только localhost:3000, и в сборке браузера ключа нет. Без TMDB_API_KEY
+    # в .env источник отвечает 401 Invalid API key (проверено запросом 2026-11-03).
+    # Лимит по документации — около 40 запросов в секунду, за превышение 429; паузу держит
+    # код модуля. Кэш только для удачных ответов: add_header без always не действует на 4xx.
+    #
+    # Условия использования TMDB требуют атрибуции на сайте: «This product uses the TMDB API
+    # but is not endorsed or certified by TMDB» и логотип TMDB — строка держится в about/credits.
+    location /api/tmdb/ {
+        # GeoDNS TMDB: клиентам из России имя разрешается в 127.0.0.1, поэтому адрес закрепляем
+        # прямо здесь. resolver не помогает: nginx спрашивает DNS напрямую и не читает /etc/hosts,
+        # где такое же закрепление лежит для node-скриптов (extra_hosts в docker-compose.yml) —
+        # эти два адреса должны совпадать. 3.170.19.106 — edge CloudFront по замеру 2026-11-03
+        # (dns.google с edns_client_subnet вне РФ); TTL ответа 60 секунд, адрес меняется, и если
+        # путь перестанет отвечать, закрепление надо обновить по тому же замеру.
+        set $tmdb_host "3.170.19.106";
+
+        set $env_key "${TMDB_API_KEY}";
+
+        if ($request_uri ~ "^/api/tmdb/([^?]+)\?(.+)$") {
+            set $tmdb_target "https://$tmdb_host/$1?api_key=$env_key&$2";
+        }
+
+        if ($request_uri ~ "^/api/tmdb/([^?]+)$") {
+            set $tmdb_target "https://$tmdb_host/$1?api_key=$env_key";
+        }
+
+        proxy_pass $tmdb_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        # SNI и Host по имени домена, потому что подключаются к адресу: CloudFront по IP без
+        # имени отвечает ошибкой.
+        proxy_ssl_name api.themoviedb.org;
+        proxy_set_header Host api.themoviedb.org;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Проверка Alloha: API отдаёт JSON с адресом страницы плеера, из браузера читается
+    # напрямую (access-control-allow-origin: *), но тот же маршрут на холодном старте
+    # падает. Прокси нужен, чтобы проверка ходила через контейнер; токен подставляется
+    # из ALLOHA_TOKEN, а если он пустой — проходит токен из query браузера.
+    # Кэш не ставим: проверка плеера должна повторяться, и неудачный ответ не должен
+    # застревать в браузере на час.
+    location /api/alloha/ {
+        resolver 127.0.0.11 valid=30s;
+
+        set $env_token "${ALLOHA_TOKEN}";
+        set $token_part "";
+        # Токен подставляем только если браузер его не прислал: код страницы просит
+        # прокси без токена, а прямой запасной запрос идёт с токеном из своего файла.
+        if ($args !~ "token=") {
+            set $token_part "token=$env_token&";
+        }
+
+        if ($request_uri ~ "^/api/alloha/?\?(.+)$") {
+            set $alloha_target "https://api.alloha.tv/?$token_part$1";
+        }
+
+        proxy_pass $alloha_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host api.alloha.tv;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "no-store";
+    }
+
+    # JSON-RPC myshows.me (календарь выходов серий): источник принимает только POST, поэтому
+    # запрос идёт телом, а не адресом. Прокси нужен по той же причине, что у Alloha — на
+    # холодном старте маршрут к хосту висит и обрывается, а через контейнер тот же запрос
+    # проходит. Кэш здесь не ставим: кэш ответа по дню делает слой приложения (netCache),
+    # и он же решает, когда повторить после неудачи. User-Agent назван: правила источника
+    # требуют, чтобы по нему отличали трафик своего приложения.
+    location /api/myshows/ {
+        resolver 127.0.0.11 valid=30s;
+
+        set $myshows_target "https://myshows.me/v3/rpc/";
+
+        proxy_pass $myshows_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host myshows.me;
+        proxy_set_header User-Agent "kinofree/1.0 (karusel Series, JSON-RPC client)";
+        proxy_set_header Content-Type "application/json";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 15s;
+        # Пакет — до 10 вызовов, тело получается около 600 байт; лимит ставим с запасом,
+        # чтобы источник не отклонил запрос как слишком большой.
+        client_max_body_size 64k;
+        add_header Cache-Control "no-store";
+    }
+
+    # Проверка Collaps (embed-страница): тот же смысл, что у Alloha — читается из
+    # браузера по CORS, но на холодном старте маршрут падает, поэтому есть прокси.
+    # Ответ проверяется по коду и непустому телу, поэтому кэш здесь не нужен.
+    location /api/collaps/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/collaps(/.*)$") {
+            set $collaps_target "https://api.tobaco.ws$1";
+        }
+
+        proxy_pass $collaps_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host api.tobaco.ws;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "no-store";
+    }
+
+    # Постеры дорам. CDN источника отдаёт картинку только когда referer — страница
+    # самого источника (проверено запросом: пустой referer и наш домен — 403,
+    # referer зеркала — 200). Браузер такой referer подменить не может, поэтому
+    # картинку грузим через этот прокси. В PocketBase храним исходный адрес постера,
+    # путь прокси собирает src/lib/shared/doramaPoster.js.
+    location /api/dorama-poster/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/dorama-poster(/.+)$") {
+            set $poster_target "https://dr.one-way.work$1";
+        }
+
+        proxy_pass $poster_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host dr.one-way.work;
+        proxy_set_header Referer "https://m.doramatv.one/";
+        # Зеркало закрыто ddos-guard: без пользовательского агента он отвечает ошибкой.
+        proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0 Safari/537.36";
+        add_header Cache-Control "public, max-age=86400";
+    }
+
+    # Постеры TMDB ведём через наш домен по тому же правилу, что dorama-poster: запрос идёт
+    # с нашего адреса, и карточка не зависит ни от правил CDN, ни от блокировщика, который
+    # отсеивает посторонние домены. В PocketBase храним исходный адрес postera, путь прокси
+    # собирает src/lib/shared/doramaPoster.js (image.tmdb.org).
+    location /api/tmdb-poster/ {
+        # То же закрепление, что в location /api/tmdb/: image.tmdb.org ведёт на
+        # tmdb-image-prod.b-cdn.net, и клиентам из России это имя тоже отвечает 127.0.0.1.
+        # 185.93.1.247 — узел BunnyCDN, выбранный замером 2026-11-03: несколько узлов того же
+        # диапазона отвечают заголовками и обрывают тело ответа на ~16 КБ (242 к тому же
+        # отвечает страницей «unconfigured» — этот узел не обслуживает зону), а 247 четыре раза
+        # подряд отдал файл целиком. Тот же адрес закреплен в extra_hosts docker-compose.yml —
+        # эти два адреса должны совпадать, и при смене узла обновлять надо оба места.
+        set $tmdb_image_host "185.93.1.247";
+
+        if ($request_uri ~ "^/api/tmdb-poster(/.+)$") {
+            set $tmdb_image_target "https://$tmdb_image_host$1";
+        }
+
+        proxy_pass $tmdb_image_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_ssl_name image.tmdb.org;
+        proxy_set_header Host image.tmdb.org;
+        proxy_connect_timeout 5s;
+        # Файлpostera — 60–100 КБ: на медленном узле он читается дольше, чем десять секунд,
+        # и nginx обрывает ответ, оставив Content-Length от ответа выше (браузер показывает
+        # ERR_CONTENT_LENGTH_MISMATCH). Поэтому чтение держим тридцать секунд.
+        proxy_read_timeout 30s;
+        add_header Cache-Control "public, max-age=86400";
+    }
+
+    # Постер по номеру Кинопоиска: st.kp.yandex.net/images/film_big/<id>.jpg отвечает 200 без
+    # referer и без ключа (замер 2026-11-04: четыре номера дорам lordserials.fan — 6648249,
+    # 9027270, 8261500, 4934994 — отдали файл целиком, 98–184 КБ). Ведём через наш домен по
+    # тому же правилу, что tmdb-poster: запрос идёт с нашего адреса, и карточка не зависит от
+    # блокировщика посторонних доменов. Путь прокси собирает src/lib/shared/doramaPoster.js.
+    location /api/kp-poster/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/kp-poster(/.+)$") {
+            set $kp_poster_target "https://st.kp.yandex.net$1";
+        }
+
+        proxy_pass $kp_poster_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_ssl_name st.kp.yandex.net;
+        proxy_set_header Host st.kp.yandex.net;
+        proxy_connect_timeout 5s;
+        # Файл postera — 100–180 КБ: держим чтение тридцать секунд, как в tmdb-poster.
+        proxy_read_timeout 30s;
+        add_header Cache-Control "public, max-age=86400";
+    }
+
+    # Открытая база Shikimori: публичный API без ключей, в нём есть и дорамы. Браузер не
+    # может прочитать ответ напрямую (CORS) и API требует пользовательский агент, поэтому
+    # поиск по названию идёт через этот прокси. Имя shikimori.one с этой машины не
+    # разрешается (NXDOMAIN), рабочее — shikimori.io.
+    # Лимит Shikimori — 5 запросов в секунду и 90 в минуту: паузу держит
+    # src/lib/shared/shikimori.js, здесь только подстановка адреса и агента.
+    location /api/shikimori/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/shikimori/([^?]+)\?(.+)$") {
+            set $shiki_target "https://shikimori.io/api/$1?$2";
+        }
+        if ($request_uri ~ "^/api/shikimori/([^?]+)$") {
+            set $shiki_target "https://shikimori.io/api/$1";
+        }
+
+        proxy_pass $shiki_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host shikimori.io;
+        proxy_set_header User-Agent "Mozilla/5.0 (compatible; kinofree/1.0; локальный проект)";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Карусель дорам: страницу kinovibe.cc читаем через этот прокси, потому что источник
+    # не отдаёт CORS-заголовки (проверено: ответ 200 без access-control-allow-origin),
+    # то есть из браузера её прочитать нельзя. Путь всегда с косой чертой на конце —
+    # location /api/kinovibe/ не совпадёт с /api/kinovibe, и запрос ушёл бы в SPA-фолбэк.
+    # Постеры карточек идут через этот же прокси: их CDN отвечает 200 и без нашего referer
+    # (проверено живым запросом), отдельного правила для картинок не нужно. Путь с нашего
+    # адреса выбирает src/lib/shared/doramaPoster.js — так картинка не зависит от
+    # блокировщика, который отсеивает посторонние домены, и браузер никуда не уходит.
+    location /api/kinovibe/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/kinovibe/?(.*)$") {
+            set $kinovibe_target "https://kinovibe.cc/$1";
+        }
+
+        proxy_pass $kinovibe_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host kinovibe.cc;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Оценка AnimeGO — её берёт отдельный скрипт src/lib/shared/animegoRating/index.js.
+    # Из браузера их страницу прочитать нельзя: замер 2026-11-02 дал ответ без
+    # access-control-allow-origin («No 'Access-Control-Allow-Origin' header»), поэтому
+    # страница читается через этот прокси. Замер из контейнера в тот же день:
+    # /anime/season/2026/fall отвечает 200 без нашего пользователя (218721 байт) и с
+    # браузерным (21 карточка списка сезона, 14 из них с оценкой). Поиск по имени у
+    # AnimeGO не работает: страница поиска отвечает 200 оболочкой, 0 карточек
+    # (проверено на «Tokyo Revengers» и на русском «Токийские мстители»), поэтому скрипт
+    # берёт оценки только из их списка сезона.
+    location /api/animego/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/animego/?(.*)$") {
+            set $animego_target "https://animego.me/$1";
+        }
+
+        proxy_pass $animego_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host animego.me;
+        proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0 Safari/537.36";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        # Скрипт читает список сезона один раз в день (ключ кэша — день), поэтому кэша
+        # на час достаточно: на следующий день запрос идёт заново.
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Выборка карусели аниме — страница онгоинга animevost.org. JSON API у источника нет:
+    # api.animevost.org/.../GetList/?filter=onair отвечает 404 с путей сайта, а /ongoing/ —
+    # HTML DataLife Engine (10 карточек на страницу, заголовок карточки с номером серии).
+    # Из браузера страницу прочитать нельзя: замер 2026-11-05 — ответ 200 без
+    # access-control-allow-origin. Поэтому читаем через этот прокси. Зеркало v14.vost.pw
+    # отдаёт ту же разметку и тот же RSS, поэтому оно добавлено вторым адресом: скрипт
+    # идёт к нему, когда основной не ответил. RSS источника (/rss.xml) отвечает 200 и несёт
+    # тот же состав онгоингов с номером серии — это резерв, когда страница не ответила.
+    location /api/animevost/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/animevost/?(.*)$") {
+            set $animevost_target "https://animevost.org/$1";
+        }
+
+        proxy_pass $animevost_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host animevost.org;
+        proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0 Safari/537.36";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        # Список онгоинга читаем один раз в день (ключ кэша — день), поэтому кэша на час
+        # достаточно: на следующий день запрос идёт заново.
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # То же самое на зеркале v14.vost.pw — второй путь для тех же адресов. Он нужен,
+    # потому что основной домен иногда не отвечает или блокируется маршрутом; разметка
+    # и RSS на зеркале те же, разбор один и тот же.
+    location /api/animevost-mirror/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/animevost-mirror/?(.*)$") {
+            set $animevost_mirror_target "https://v14.vost.pw/$1";
+        }
+
+        proxy_pass $animevost_mirror_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host v14.vost.pw;
+        proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0 Safari/537.36";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Лента трейлеров на главной: Atom feed Reddit. JSON API для этой ленты нет, и из
+    # браузера её прочитать нельзя (ответ без access-control-allow-origin), поэтому читаем
+    # через прокси. Источник отвечает 429 на не браузерный User-Agent — проверено живым
+    # запросом 2026-11-13 из контейнера: с Chrome UA этот адрес отвечает 200, с «curl/8.5.0»
+    # и «FeedReader/1.0» — 429. Поэтому браузерный UA подставляет nginx, а не браузер.
+    location /api/reddit/ {
+        resolver 127.0.0.11 valid=30s;
+
+        if ($request_uri ~ "^/api/reddit/?(.*)$") {
+            set $reddit_target "https://www.reddit.com/$1";
+        }
+
+        proxy_pass $reddit_target;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_set_header Host www.reddit.com;
+        proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0 Safari/537.36";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        # Ленту читаем раз в десять минут (см. src/lib/shared/trailers), поэтому кэша на
+        # десять минут достаточно: на следующий запрос браузер уже идёт на источник.
+        # Периодическое обновление добавляет в путь метку времени, то есть обходит этот
+        # кэш — иначе каждый интервал получал бы тот же ответ и свежие записи не появлялись.
+        add_header Cache-Control "public, max-age=600";
+    }
+
+    # Файлы сборки с хешем в имени: их имя меняется только при новой сборке, поэтому
+    # кэш на год безопасен. Раньше из-за no-cache браузер при каждом визите заново
+    # проверял ~30 таких файлов (по одному запросу на файл), даже когда они не менялись.
+    location /_app/immutable/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    # Шрифт (InterVariable.woff2, 352 КБ): файл уже сжат как woff2, gzip его не уменьшает,
+    # поэтому раньше браузер каждый раз платил 200-запрос и качал его целиком
+    # (проверено: без кэша каждый визит — второй запрос на шрифт, и шрифт в списке
+    # ресурсов грузится дольше остальных файлов).
+    # Компромисс: имя файла без хеша, поэтому если шрифт заменят с тем же именем,
+    # посетители увидят новый не сразу, а после истечения кэша — 30 дней. Файл лежит в
+    # static/fonts и меняется редко; при замене можно переименовать файл, и кэш сам
+    # обновится, потому что имя войдёт в preload и в font-face.
+    location /fonts/ {
+        add_header Cache-Control "public, max-age=2592000" always;
+        try_files $uri =404;
+    }
+
+    # Статика и SPA-фолбэк
+    # prerender даёт плоские файлы (releases.html, watch.html), поэтому нужен $uri.html,
+    # иначе /releases не совпадает ни с $uri, ни с $uri/ и отдаёт index.html (гланную).
+    location / {
+        try_files $uri $uri/ $uri.html /index.html;
+
+        # HTML нужно перечитывать каждый раз. Имена JS-чанков хешятся, но index.html без
+        # Cache-Control браузер кэширует эвристически: после сборки он показывает старую
+        # страницу и старую index.html, которая ссылается на старые чанки.
+        add_header Cache-Control "no-cache";
+    }
+}
